@@ -308,6 +308,15 @@ func openDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+func ValidateDB(dbPath string) error {
+	db, err := openDB(dbPath)
+	if err != nil {
+		return err
+	}
+	db.Close()
+	return nil
+}
+
 func createMemoryDB() (*gorm.DB, error) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),

@@ -4,10 +4,12 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"io"
 	"os"
 	"os/signal"
 	"time"
 
+	"dingtalk/internal/crypto"
 	"dingtalk/internal/database"
 	"dingtalk/internal/logger"
 	"dingtalk/internal/server"
@@ -19,13 +21,54 @@ var distFS embed.FS
 func main() {
 	dbPath := flag.String("d", "", "database file path")
 	port := flag.String("p", "8080", "server port")
+	keyUserID := flag.String("k", "", "user ID for database decryption (optional)")
+	outputPath := flag.String("o", "", "output path for decrypted database")
 	flag.Parse()
 
 	if *dbPath == "" {
 		logger.Fatal("database path is required")
 	}
 
-	db, err := database.MigrateToMemory(*dbPath)
+	finalDBPath := *dbPath
+
+	if *keyUserID != "" {
+		logger.Info("decrypting database...")
+		key := crypto.GenerateKey(*keyUserID)
+
+		tmpFile, err := os.CreateTemp("", "dingtalk-*.db")
+		if err != nil {
+			logger.Fatal("failed to create temp file: %v", err)
+		}
+		tempPath := tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(tempPath)
+
+		if err := crypto.DecryptDatabase(*dbPath, tempPath, key); err != nil {
+			logger.Fatal("failed to decrypt database: %v", err)
+		}
+
+		if err := database.ValidateDB(tempPath); err != nil {
+			logger.Fatal("decryption failed: invalid database (wrong key?): %v", err)
+		}
+
+		logger.Info("decryption complete")
+
+		if *outputPath != "" {
+			if err := copyFile(tempPath, *outputPath); err != nil {
+				logger.Fatal("failed to save decrypted database: %v", err)
+			}
+			logger.Info("decrypted database saved to %s", *outputPath)
+		}
+
+		finalDBPath = tempPath
+	} else if *outputPath != "" {
+		if err := copyFile(*dbPath, *outputPath); err != nil {
+			logger.Fatal("failed to copy database: %v", err)
+		}
+		logger.Info("database copied to %s", *outputPath)
+	}
+
+	db, err := database.MigrateToMemory(finalDBPath)
 	if err != nil {
 		logger.Fatal("failed to migrate database: %v", err)
 	}
@@ -49,4 +92,21 @@ func main() {
 		logger.Fatal("server shutdown failed: %v", err)
 	}
 	logger.Info("server exited")
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
